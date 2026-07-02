@@ -61,13 +61,14 @@ output_eltype(::typeof(any), ::Type) = Bool
 output_size(::typeof(all), ::Tuple) = ()
 output_eltype(::typeof(all), ::Type) = Bool
 
-# `sum`/`prod` are deliberately NOT declared here: Base widens sub-word integers
-# (`Bool`/`Int8`/`Int16`/`Int32`-on-64-bit) to `Int` via non-public
-# `Base.add_sum`/`Base.mul_prod`, so a public-API-only eltype declaration would be
-# WRONG (not just missing) for those inputs — a silent misallocation, exactly what
-# this package exists to prevent. Falls back to `output_signature`'s default
-# (input eltype), which is at least honestly wrong-shaped (whole-array `size`) for
-# a caller who forgot to declare, rather than plausible-looking and wrong.
+# sum/prod widen sub-word integers (`Bool`/`Int8`/`Int16`/`Int32`-on-64-bit) to
+# `Int` internally — `Base.add_sum`/`Base.mul_prod` are the exact (non-public)
+# ops Base reduces with, so `promote_op` against them matches `sum`/`prod`'s
+# real return type precisely (user decision: exactness over public-API-only).
+output_size(::typeof(sum), ::Tuple) = ()
+output_eltype(::typeof(sum), T::Type) = Base.promote_op(Base.add_sum, T, T)
+output_size(::typeof(prod), ::Tuple) = ()
+output_eltype(::typeof(prod), T::Type) = Base.promote_op(Base.mul_prod, T, T)
 
 # `extrema` is NOT declared: it returns a `Tuple`, which `alloc_output`/`similar`
 # cannot produce — doesn't fit this package's array-container contract.
