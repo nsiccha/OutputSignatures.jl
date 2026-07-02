@@ -28,6 +28,20 @@ using LinearAlgebra: dot, norm, diag
         @test size(y) == () && eltype(y) == Int
     end
 
+    @testset "sum/prod: narrow-int widening matches Base exactly" begin
+        for T in (Int8, UInt8, Int16, Bool)
+            v = T <: Bool ? rand(Bool, 5) : rand(T(0):T(3), 5)
+            @test output_size(sum, size(v)) == ()
+            @test output_eltype(sum, eltype(v)) == typeof(sum(v))
+            @test output_size(prod, size(v)) == ()
+            @test output_eltype(prod, eltype(v)) == typeof(prod(v))
+            y = alloc_output(sum, v)
+            @test size(y) == () && eltype(y) == typeof(sum(v))
+        end
+        v = rand(5)
+        @test output_eltype(sum, eltype(v)) == Float64
+    end
+
     @testset "Base shape transforms" begin
         v = rand(5)
         @test output_size(diff, size(v)) == (4,)
