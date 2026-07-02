@@ -31,5 +31,7 @@ output_size(quantile, size(v), p)   # (length(p),)  — no pilot, no length(v) d
 alloc_output(quantile, v, p)        # Vector{Float64}(undef, length(p))
 ```
 
-Opt in for a function by adding `output_size` / `output_eltype` methods. Status:
-**early WIP** — standalone, no dependencies beyond a Statistics extension.
+Opt in for a function by adding `output_size` / `output_eltype` methods. Common
+cases ship declared — Base reductions (`sum`/`prod`/`maximum`/…) + shape transforms
+(`diff`/`vec`/`permutedims`), plus `Statistics` (`quantile`/`mean`/…) and
+`LinearAlgebra` (`*`/`dot`/`norm`/`diag`) extensions. Standalone; `v0.1.0`.
