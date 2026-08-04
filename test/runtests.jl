@@ -116,6 +116,53 @@ using LinearAlgebra: dot, norm, diag
         @test size(y) == (3,) && eltype(y) == Float64
     end
 
+    @testset "gather A[idx]: size from idx, not A" begin
+        A = rand(3)
+        idx = [1, 3, 2, 1, 2]
+        @test output_size(getindex, size(A), idx) == (5,)
+        @test output_eltype(getindex, eltype(A), idx) == Float64   # default: eltype(A)
+        y = alloc_output(getindex, A, idx)
+        @test size(y) == (5,) && eltype(y) == Float64
+        @test size(y) == size(A[idx]) && eltype(y) == eltype(A[idx])
+
+        # a matrix of indices gathers into that matrix's shape
+        M = rand(5)
+        midx = [1 2; 3 4]
+        @test output_size(getindex, size(M), midx) == (2, 2)
+        @test alloc_output(getindex, M, midx) |> size == size(M[midx])
+
+        # scalar index falls through to the default (not the gather method)
+        @test output_size(getindex, size(A), 2) == size(A)
+    end
+
+    @testset "broadcast: shape+eltype of f.(args...), no pilot" begin
+        # the PPL cases: beta[1] .+ beta[2].*x .+ b[group], exp.(log_sigma),
+        # tau .* (L*z), and a scalar-first broadcast.
+        x = rand(4); beta = rand(2); b = rand(3); group = [1, 2, 3, 1]
+        lin_args = (beta[1], beta[2] .* x, b[group])
+        @test broadcast_size(lin_args...) == (4,)
+        @test broadcast_eltype(+, lin_args...) == Float64
+        s = broadcast_signature(+, lin_args...)
+        @test s.size == (4,) && s.eltype == Float64
+        y = alloc_broadcast(+, lin_args...)
+        real = broadcast(+, lin_args...)
+        @test size(y) == size(real) && eltype(y) == eltype(real)
+
+        log_sigma = rand(2)
+        @test broadcast_size(log_sigma) == (2,)
+        @test alloc_broadcast(exp, log_sigma) |> size == size(exp.(log_sigma))
+
+        # scalar-first: the case the `=insize` default got wrong (3.0 .+ x)
+        @test broadcast_size(3.0, x) == (4,)
+        y = alloc_broadcast(+, 3.0, x)
+        @test size(y) == (4,) && eltype(y) == Float64
+
+        # integer args promote like Base's own broadcast eltype
+        i = rand(1:5, 6)
+        @test broadcast_eltype(+, i, 1) == eltype(i .+ 1)
+        @test eltype(alloc_broadcast(+, i, 1)) == eltype(i .+ 1)
+    end
+
     @testset "inferred_eltype (opt-in promote_op)" begin
         @test OutputSignatures.inferred_eltype(x -> x > 0, Float64) == Bool
     end

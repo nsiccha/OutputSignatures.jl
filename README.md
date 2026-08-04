@@ -33,5 +33,19 @@ alloc_output(quantile, v, p)        # Vector{Float64}(undef, length(p))
 
 Opt in for a function by adding `output_size` / `output_eltype` methods. Common
 cases ship declared — Base reductions (`sum`/`prod`/`maximum`/…) + shape transforms
-(`diff`/`vec`/`permutedims`), plus `Statistics` (`quantile`/`mean`/…) and
-`LinearAlgebra` (`*`/`dot`/`norm`/`diag`) extensions. Standalone; `v0.1.0`.
+(`diff`/`vec`/`permutedims`), the `A[idx]` **gather** (`getindex` with an array of
+indices → shape of `idx`), plus `Statistics` (`quantile`/`mean`/…) and
+`LinearAlgebra` (`*`/`dot`/`norm`/`diag`) extensions.
+
+`broadcast(f, args...)` is **function-first** (the elementwise `f` comes before
+the data), so it can't use the `x`-first `output_size` contract. It gets a
+dedicated, parallel API instead:
+
+```julia
+broadcast_size(args...)          # combined broadcast axes of the data args, as lengths
+broadcast_eltype(f, args...)     # via Base's own combine_eltypes
+broadcast_signature(f, args...)  # -> (; size, eltype)
+alloc_broadcast(f, args...)      # similar(Base.broadcasted(f, args...), …)
+```
+
+Standalone; `v0.1.0`.

@@ -1,6 +1,7 @@
 module OutputSignatures
 
 export output_size, output_eltype, output_signature, alloc_output
+export broadcast_size, broadcast_eltype, broadcast_signature, alloc_broadcast
 
 """
     output_size(f, insize::Tuple, args...) -> Tuple
@@ -84,10 +85,74 @@ output_size(::typeof(permutedims), insize::Tuple, perm) = map(i -> insize[i], Tu
 # (`Transpose`/`Adjoint`) with zero allocation in the general case — there is
 # nothing for `alloc_output` to preallocate.
 
+# gather: `A[idx]` with an ARRAY of indices returns an array shaped like `idx`
+# (NOT like `A`) — the `b[group]` gather that is ubiquitous in hierarchical
+# models. Fits the `x`-first contract cleanly: `getindex(A, idx)`, `A` first.
+# Eltype is preserved, so the default (`= eltype(A)`) is already correct — only
+# size is declared (same as the `diff`/`vec`/`permutedims` transforms above).
+output_size(::typeof(getindex), _insize::Tuple, idx::AbstractArray) = size(idx)
+
 # `count(f, itr)`/`any(f, itr)`/`all(f, itr)`/`map(f, itrs...)`/`filter(f, itr)`
 # (predicate/function-first forms) are NOT declared: their real argument order is
 # predicate first, data second — the opposite of this package's documented
 # `output_size(f, insize, args...)` contract ("size of `f(x, args...)`", `x`
-# first). Only the predicate-free single-arg forms above are covered.
+# first). Only the predicate-free single-arg forms above are covered. `broadcast`
+# is function-first for the same reason, but it IS the load-bearing PPL case, so
+# it ships via its own `broadcast_*`/`alloc_broadcast` API below rather than a
+# contorted `output_size(::typeof(broadcast), …)` (see the note there).
+
+# --- broadcast: function-first, so it gets a dedicated API --------------------
+#
+# `broadcast(f, args...)` (equivalently `f.(args...)`) is function-first — the
+# elementwise `f` comes BEFORE the data — so it does not fit the `x`-first
+# `output_size(f, insize, args...)` contract, exactly like the `map`/`count`/
+# `filter` forms above. A `output_size(::typeof(broadcast), _insize, f, args...)`
+# method would also silently BREAK when routed through `alloc_output`/
+# `output_signature`: those consume the first DATA arg as `x` and pass only its
+# SIZE, dropping the array itself from the axis combination. So broadcast gets its
+# own entry points instead. The output SHAPE is the combined broadcast axes of the
+# DATA args (independent of `f`); the ELTYPE needs the same inference Base itself
+# uses to size a broadcast (`combine_eltypes`), so — like `inferred_eltype` — it
+# can widen to `Any` when inference fails. This is the linear predictor / `exp.()`
+# / `tau .* (L*z)` case that dominates a PPL log-density body.
+
+"""
+    broadcast_size(args...) -> Tuple
+
+Size of `broadcast(f, args...)` (equivalently `f.(args...)`): the combined
+broadcast axes of the data `args`, as lengths. Independent of `f`, so `f` is
+not an argument. No pilot run.
+"""
+broadcast_size(args...) = map(length, Base.Broadcast.combine_axes(args...))
+
+"""
+    broadcast_eltype(f, args...) -> Type
+
+Element type of `broadcast(f, args...)`, via `Base.Broadcast.combine_eltypes` —
+the exact inference `Base` uses to allocate a broadcast's output. May widen to
+`Any` when inference cannot pin it down (same caveat as [`inferred_eltype`](@ref)).
+"""
+broadcast_eltype(f, args...) = Base.Broadcast.combine_eltypes(f, args)
+
+"""
+    broadcast_signature(f, args...) -> (; size, eltype)
+
+The `(size, eltype)` of `broadcast(f, args...)`, from immediately-available info
+— no pilot run. The function-first companion of [`output_signature`](@ref).
+"""
+broadcast_signature(f, args...) =
+    (; size = broadcast_size(args...), eltype = broadcast_eltype(f, args...))
+
+"""
+    alloc_broadcast(f, args...)
+
+Preallocate the output of `broadcast(f, args...)` (`f.(args...)`) — no pilot run.
+Uses `similar(Base.broadcasted(f, args...), …)`, so the container type and shape
+match what `Base` itself would allocate. Pairs with MutatingFunctions.jl's
+`apply!!(cache, broadcast, f, args...)` fill step: this makes the buffer, that
+fills it.
+"""
+alloc_broadcast(f, args...) =
+    similar(Base.broadcasted(f, args...), broadcast_eltype(f, args...))
 
 end # module
