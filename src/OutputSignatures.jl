@@ -92,6 +92,22 @@ output_size(::typeof(permutedims), insize::Tuple, perm) = map(i -> insize[i], Tu
 # size is declared (same as the `diff`/`vec`/`permutedims` transforms above).
 output_size(::typeof(getindex), _insize::Tuple, idx::AbstractArray) = size(idx)
 
+# multi-dim (Cartesian) gather: `A[i, group]`, `A[:, cols]`, `A[rows, cols]`, … — a
+# `getindex` with 2+ index args, where the result shape is the concatenation of each
+# index's own axes: a scalar index drops its dim, an `AbstractVector` contributes its
+# length, `:` the source dim's extent, a range/`AbstractArray`/`CartesianIndex` its
+# own. The single-`AbstractArray`-index method above is the LINEAR-indexing case
+# (`A[idx]` → `size(idx)`, whatever `ndims(A)`); THIS is the Cartesian case, and the
+# `i1, i2, …` arity (≥2 index args) keeps the two from overlapping — a lone index
+# still hits the linear/scalar methods, not this one. Sized with Base's own
+# `to_indices`/`index_shape` over `CartesianIndices(insize)` (lazy — no allocation),
+# so mixed scalar/vector/colon/range indices size EXACTLY as the real `getindex`
+# would — the same match-Base stance as the reductions above. Eltype is preserved, so
+# the default `output_eltype` is already correct; only size is declared. This is the
+# `b[i, group]` gather in a grouped-varying model body (BRM's julianic 0-alloc pool).
+output_size(::typeof(getindex), insize::Tuple, i1, i2, irest...) =
+    map(length, Base.index_shape(Base.to_indices(CartesianIndices(insize), (i1, i2, irest...))...))
+
 # `count(f, itr)`/`any(f, itr)`/`all(f, itr)`/`map(f, itrs...)`/`filter(f, itr)`
 # (predicate/function-first forms) are NOT declared: their real argument order is
 # predicate first, data second — the opposite of this package's documented

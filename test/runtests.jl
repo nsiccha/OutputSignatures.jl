@@ -135,6 +135,41 @@ using LinearAlgebra: dot, norm, diag
         @test output_size(getindex, size(A), 2) == size(A)
     end
 
+    @testset "multi-dim (Cartesian) gather A[i, group]: mixed scalar/vector/colon" begin
+        b = reshape(1.0:15.0, 3, 5)   # 3x5
+        g1 = [1, 3]                    # into dim-1 (<= 3)
+        g2 = [2, 4, 1, 5]              # into dim-2 (<= 5)
+
+        # scalar + vector: drop dim-1, keep length(g2)  (the b[i, group] case)
+        @test output_size(getindex, size(b), 1, g2) == (4,)
+        @test output_size(getindex, size(b), 1, g2) == size(b[1, g2])
+        # colon + vector: keep dim-1 extent, keep length(g2)
+        @test output_size(getindex, size(b), :, g2) == (3, 4)
+        @test output_size(getindex, size(b), :, g2) == size(b[:, g2])
+        # vector + scalar: keep length(g1), drop dim-2
+        @test output_size(getindex, size(b), g1, 2) == (2,)
+        @test output_size(getindex, size(b), g1, 2) == size(b[g1, 2])
+        # vector + vector
+        @test output_size(getindex, size(b), g1, g2) == (2, 4)
+        @test output_size(getindex, size(b), g1, g2) == size(b[g1, g2])
+        # range indices keep their length
+        @test output_size(getindex, size(b), 2:3, 1:2) == (2, 2)
+        @test output_size(getindex, size(b), 2:3, 1:2) == size(b[2:3, 1:2])
+
+        # eltype preserved (default), and alloc_output / output_signature agree
+        @test output_eltype(getindex, eltype(b), 1, g2) == Float64
+        y = alloc_output(getindex, b, 1, g2)
+        @test size(y) == size(b[1, g2]) && eltype(y) == eltype(b[1, g2])
+        s = output_signature(getindex, b, :, g2)
+        @test s.size == size(b[:, g2]) && s.eltype == eltype(b[:, g2])
+
+        # the single-arg linear-indexing method is untouched by the ≥2-arg method
+        M = reshape(1.0:15.0, 3, 5)
+        lin = [2, 6, 11]
+        @test output_size(getindex, size(M), lin) == (3,)
+        @test output_size(getindex, size(M), lin) == size(M[lin])
+    end
+
     @testset "broadcast: shape+eltype of f.(args...), no pilot" begin
         # the PPL cases: beta[1] .+ beta[2].*x .+ b[group], exp.(log_sigma),
         # tau .* (L*z), and a scalar-first broadcast.
