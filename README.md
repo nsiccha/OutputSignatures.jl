@@ -33,9 +33,16 @@ alloc_output(quantile, v, p)        # Vector{Float64}(undef, length(p))
 
 Opt in for a function by adding `output_size` / `output_eltype` methods. Common
 cases ship declared — Base reductions (`sum`/`prod`/`maximum`/…) + shape transforms
-(`diff`/`vec`/`permutedims`), the `A[idx]` **gather** (`getindex` with an array of
-indices → shape of `idx`), plus `Statistics` (`quantile`/`mean`/…) and
-`LinearAlgebra` (`*`/`dot`/`norm`/`diag`) extensions.
+(`diff`/`vec`/`permutedims`), the `A[idx]` **gather** (linear: `getindex` with an
+array of indices → shape of `idx`; Cartesian: `A[i, group]` / `A[:, cols]` with 2+
+indices → the real result shape, scalar indices dropped), plus `Statistics`
+(`quantile`/`mean`/…) and `LinearAlgebra` (`*`/`dot`/`norm`/`diag`) extensions.
+
+Every declared method follows one contract — **the first arg is the input SIZE,
+the rest are the function's ACTUAL args**: `output_size(getindex, size(A), i, idx)`,
+`output_size(*, size(L), z)` (the whole `z` matrix, not `size(z)`). Pass a size where
+an arg belongs and it falls through to the default. `output_signature`/`alloc_output`
+take the arrays directly and thread the sizing for you.
 
 `broadcast(f, args...)` is **function-first** (the elementwise `f` comes before
 the data), so it can't use the `x`-first `output_size` contract. It gets a
