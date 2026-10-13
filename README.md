@@ -56,3 +56,7 @@ alloc_broadcast(f, args...)      # similar(Base.broadcasted(f, args...), …)
 ```
 
 Standalone; `v0.1.0`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
