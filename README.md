@@ -12,7 +12,7 @@ output_signature(f, x, args...)   # -> (; size, eltype), no pilot run
 alloc_output(f, x, args...)       # -> similar(x, eltype, size)
 ```
 
-## Metadata queries (v0.2)
+## Metadata queries (v0.1.1)
 
 Every positional operand and keyword value uses a nonparametric `ValueInfo`.
 Dimensions, constants, and operand counts are ordinary data, not Julia type
@@ -157,7 +157,7 @@ restrict the metadata representation or make unknown facts allocatable.
 The allocation API preallocates from an actual first input. It cannot propagate
 signatures through a graph whose intermediate arrays do not exist yet.
 ReactiveKernels (RK) and ReactiveKernelsPPL (RKPPL) need a separate, uniform
-metadata query. The bounded foundation above is implemented in `v0.2.0`.
+metadata query. The bounded foundation above is implemented in `v0.1.1`.
 The following remains the broader target and incremental migration scope;
 tuple components and symbolic dimensions are not implemented yet.
 
