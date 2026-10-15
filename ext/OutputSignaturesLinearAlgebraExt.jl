@@ -1,7 +1,9 @@
 module OutputSignaturesLinearAlgebraExt
 
 import OutputSignatures: output_size, output_eltype
+import OutputSignatures: _standard_storage, _array_family
 import LinearAlgebra
+using LinearAlgebra: Adjoint, Transpose
 
 # A*B / A*v: the textbook shape rule, (m,k)*(k,n)->(m,n) or (m,k)*(k,)->(m,).
 output_size(::typeof(*), sizeA::Tuple{Int,Int}, B::AbstractMatrix) = (sizeA[1], size(B, 2))
@@ -22,5 +24,13 @@ output_eltype(::typeof(LinearAlgebra.norm), T::Type) = real(float(T))
 # diag(A): the main diagonal, length min(m,n); same eltype as the input.
 output_size(::typeof(LinearAlgebra.diag), sizeA::Tuple{Int,Int}) = (min(sizeA...),)
 output_eltype(::typeof(LinearAlgebra.diag), T::Type) = T
+
+# Metadata input boundary: an adjoint/transpose of standard storage indexes and
+# broadcasts like it; a flipped vector is additionally a row vector.
+_standard_storage(x::Union{Adjoint,Transpose}) = _standard_storage(parent(x))
+_array_family(x::Adjoint{<:Any,<:AbstractVector}) = _row_family(x, :adjoint_vector)
+_array_family(x::Transpose{<:Any,<:AbstractVector}) = _row_family(x, :transpose_vector)
+_row_family(x, kind::Symbol) =
+    _standard_storage(parent(x)) && axes(parent(x), 1) isa Base.OneTo{Int} ? kind : :unknown
 
 end # module

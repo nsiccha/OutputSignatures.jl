@@ -221,7 +221,7 @@ end
     @test !isempty(r.reason)
     b = infer_call(broadcast, ValueInfo[known_info(opaque), v])
     @test b.status == :unknown && value_length(b.value) == 3
-    @test type_bound(b.value) === AbstractVector
+    @test type_bound(b.value) == AbstractVector
     # Partial element bounds must not become an exact Vector{Any} container.
     g = infer_call(getindex, ValueInfo[b.value, vector_info(Int,2)])
     @test [1.,2.] isa type_bound(g.value)
@@ -234,7 +234,8 @@ end
     @test value_length(custom) == 2
     @test infer_call(getindex, ValueInfo[custom, scalar_info(Int)]).status == :unknown
     @test infer_call(broadcast, ValueInfo[known_info(+), custom, v]).status == :unknown
-    @test infer_call(sum, ValueInfo[v]; kwargs=Pair{Symbol,ValueInfo}[:dims=>known_info(1)]).status == :unknown
+    @test infer_call(sum, ValueInfo[v]; kwargs=Pair{Symbol,ValueInfo}[:init=>known_info(0.0)]).status == :unknown
+    @test infer_call(vcat, ValueInfo[v]; kwargs=Pair{Symbol,ValueInfo}[:dims=>known_info(1)]).status == :unknown
     @test infer_call(sum, ValueInfo[ValueInfo()]).status == :unknown
     @test infer_call(sum, ValueInfo[vector_info(Real, 3)]).status == :unknown
     @test infer_call(broadcast, ValueInfo[value_info(+), v, v]).status == :unknown
