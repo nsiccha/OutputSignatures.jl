@@ -3,6 +3,8 @@ module OutputSignatures
 export output_size, output_eltype, output_signature, alloc_output
 export broadcast_size, broadcast_eltype, broadcast_signature, alloc_broadcast
 
+include("metadata.jl")
+
 """
     output_size(f, insize::Tuple, args...) -> Tuple
 
