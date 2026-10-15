@@ -3,14 +3,37 @@
     using Statistics: quantile, mean, std, var, median
     using LinearAlgebra: dot, norm, diag
 
-    @testset "defaults (broadcast/elementwise case)" begin
+    @testset "explicit preserving rules and unknown calls" begin
         x = rand(4)
-        @test output_size(identity, size(x)) == (4,)
-        @test output_eltype(identity, eltype(x)) == Float64
-        s = output_signature(identity, x)
-        @test s.size == (4,) && s.eltype == Float64
-        y = alloc_output(identity, x)
-        @test size(y) == (4,) && eltype(y) == Float64
+        for f in (identity, copy, reverse, sort)
+            @test output_signature(f, x) == (; size=size(f(x)), eltype=eltype(f(x)))
+            y = alloc_output(f, x)
+            @test size(y) == size(f(x)) && eltype(y) == eltype(f(x))
+        end
+        calls = Ref(0)
+        g(x) = (calls[] += 1; length(x))
+        # A valid but undeclared function may be rejected by this allocation
+        # API. A later partial-metadata query can represent its result without
+        # claiming that size and element type were preserved.
+        sig_or_error = try output_signature(g, x) catch err; err end
+        @test sig_or_error isa ArgumentError ||
+              sig_or_error == (; size=(), eltype=Int)
+        alloc_or_error = try alloc_output(g, x) catch err; err end
+        @test alloc_or_error isa ArgumentError ||
+              (size(alloc_or_error) == () && eltype(alloc_or_error) == Int)
+        @test calls[] == 0
+    end
+
+    @testset "explicit preserving shapes with changing element types" begin
+        for (f, x) in ((cumsum, Int8[1,2,3]),
+                       (cumprod, Int8[1,2,3]),
+                       (cumsum, Bool[true,false,true]),
+                       (cumprod, Bool[true,false,true]),
+                       (diff, Bool[true,false,true]))
+            actual = f(x)
+            @test output_signature(f, x) == (; size=size(actual), eltype=eltype(actual))
+        end
+        @test output_size(diff, (0,)) == size(diff(Float64[]))
     end
 
     @testset "Base reductions to scalar" begin
@@ -85,6 +108,10 @@
             y = alloc_output(f, v)
             @test size(y) == () && eltype(y) == Float64
         end
+        cv = ComplexF64[1+2im, 2+3im, 3+4im]
+        for f in (std, var)
+            @test output_signature(f, cv) == (; size=size(f(cv)), eltype=typeof(f(cv)))
+        end
     end
 
     @testset "LinearAlgebra ext" begin
@@ -114,13 +141,18 @@
         @test output_size(diag, size(A)) == (3,)
         y = alloc_output(diag, A)
         @test size(y) == (3,) && eltype(y) == Float64
+
+        bools = Bool[true false; true true]
+        @test output_eltype(*, Bool, bools) == eltype(bools * bools)
+        @test output_eltype(dot, Bool, Bool[true, false]) ==
+              typeof(dot(Bool[true, false], Bool[true, false]))
     end
 
     @testset "gather A[idx]: size from idx, not A" begin
         A = rand(3)
         idx = [1, 3, 2, 1, 2]
         @test output_size(getindex, size(A), idx) == (5,)
-        @test output_eltype(getindex, eltype(A), idx) == Float64   # default: eltype(A)
+        @test output_eltype(getindex, eltype(A), idx) == Float64
         y = alloc_output(getindex, A, idx)
         @test size(y) == (5,) && eltype(y) == Float64
         @test size(y) == size(A[idx]) && eltype(y) == eltype(A[idx])
@@ -131,8 +163,18 @@
         @test output_size(getindex, size(M), midx) == (2, 2)
         @test alloc_output(getindex, M, midx) |> size == size(M[midx])
 
-        # scalar index falls through to the default (not the gather method)
-        @test output_size(getindex, size(A), 2) == size(A)
+        # scalar and whole-array linear indices have their own declarations
+        @test output_size(getindex, size(A), 2) == size(A[2])
+        @test output_size(getindex, size(A), :) == size(A[:])
+        @test output_signature(getindex, A, 2) == (; size=size(A[2]), eltype=typeof(A[2]))
+        @test size(alloc_output(getindex, A, 2)) == ()
+
+        # A Boolean mask has a data-dependent result length; do not inspect it
+        # during signature analysis or inherit the input's shape.
+        mask = Bool[true, false, true]
+        sig_or_error = try output_signature(getindex, A, mask) catch err; err end
+        @test sig_or_error isa ArgumentError ||
+              sig_or_error == (; size=size(A[mask]), eltype=eltype(A[mask]))
     end
 
     @testset "broadcast: shape+eltype of f.(args...), no pilot" begin
@@ -194,7 +236,7 @@ end
             @test output_size(getindex, size(b), 2:3, 1:2) == (2, 2)
             @test output_size(getindex, size(b), 2:3, 1:2) == size(b[2:3, 1:2])
 
-            # eltype preserved (default), and alloc_output / output_signature agree
+            # eltype preserved by an explicit rule; allocation and query agree
             @test output_eltype(getindex, eltype(b), 1, g2) == Float64
             y = alloc_output(getindex, b, 1, g2)
             @test size(y) == size(b[1, g2]) && eltype(y) == eltype(b[1, g2])
