@@ -153,6 +153,29 @@ _infer_call(@nospecialize(f), ::Vector{ValueInfo}) = _unknown("no metadata rule 
 # Type algebra is only applied to Base's closed primitive numeric families.
 # No promote_op/return_type, exemplar arithmetic, or user promotion method runs.
 _scalar_type(@nospecialize(f), ::Vector{Type}) = nothing
+_scalar_result_type(@nospecialize(f), args::Vector{ValueInfo}) =
+    _scalar_type(f, Type[element_type(v) for v in args])
+
+# Julia lowers literal powers through literal_pow, whose negative-integer
+# behavior differs from an ordinary ^ call. Inspect the explicit Val constant
+# as data; do not specialize a metadata walker on its exponent parameter.
+function _literal_exponent(v::ValueInfo)
+    c = known_value(v)
+    c isa KnownValue && c.value isa Val || return nothing
+    p = typeof(c.value).parameters[1]
+    p isa _MachineInteger ? p : nothing
+end
+function _scalar_result_type(::typeof(Base.literal_pow), args::Vector{ValueInfo})
+    length(args) == 3 || return nothing
+    f = known_value(args[1])
+    f isa KnownValue && f.value === (^) || return nothing
+    p = _literal_exponent(args[3])
+    p === nothing && return nothing
+    T = element_type(args[2])
+    _machine(T) || return nothing
+    T <: Integer && p < 0 ? Float64 : T
+end
+
 _unary_type(::Union{typeof(+),typeof(-)}, T::Type) = T === Bool ? Int : T
 _unary_type(::typeof(*), T::Type) = T
 _unary_type(::typeof(exp), T::Type) = T <: Integer ? Float64 : T
@@ -190,11 +213,25 @@ _arithmetic_type(f::typeof(exp), ts::Vector{Type}) =
 function _infer_call(f::Union{typeof(+),typeof(-),typeof(*),typeof(/),typeof(^),typeof(exp)},
                      args::Vector{ValueInfo})
     all(v -> v.family === :scalar, args) || return _unknown("scalar arithmetic requires scalar operands")
-    T = _scalar_type(f, Type[type_bound(v) for v in args])
+    T = _scalar_result_type(f, args)
     T === nothing ? _unknown("no scalar rule for these operand types or arity") : _supported(scalar_info(T))
 end
 
+function _infer_call(f::typeof(Base.literal_pow), args::Vector{ValueInfo})
+    length(args) == 3 && args[2].family === :scalar ||
+        return _unknown("literal_pow requires a scalar base and known callable/exponent")
+    T = _scalar_result_type(f, args)
+    T === nothing ? _unknown("literal_pow requires Base.^, a machine-real base and a known integer Val") :
+        _supported(scalar_info(T))
+end
+
 _vector(v::ValueInfo) = v.family === :standard_vector && value_rank(v) == 1
+function _broadcast_scalar(v::ValueInfo)
+    v.family === :scalar && _machine(type_bound(v)) && return true
+    # Base makes these literal_pow control arguments scalar-like via Ref.
+    c = known_value(v)
+    c isa KnownValue && (c.value === (^) || _literal_exponent(v) !== nothing)
+end
 _element_info(T::Type) = T <: Number ? scalar_info(T) : ValueInfo(type_bound=T)
 function _vector_result(T::Type, n; container_type::Type=AbstractVector)
     ax = n === nothing ? nothing : Base.OneTo(n)
@@ -223,9 +260,9 @@ function _infer_call(::typeof(broadcast), args::Vector{ValueInfo})
     f = known_value(args[1])
     f isa KnownValue || return _unknown("broadcast callable is not known")
     operands = args[2:end]
-    all(v -> _vector(v) || (v.family === :scalar && _machine(type_bound(v))), operands) ||
+    all(v -> _vector(v) || _broadcast_scalar(v), operands) ||
         return _unknown("broadcast container/scalar semantics are not established")
-    T = _scalar_type(f.value, Type[element_type(v) for v in operands])
+    T = _scalar_result_type(f.value, operands)
     any(_vector, operands) || return T === nothing ?
         _unknown("no scalar broadcast rule") : _supported(scalar_info(T))
     n = 1
