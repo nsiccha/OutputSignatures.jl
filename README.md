@@ -1,16 +1,90 @@
 # OutputSignatures.jl
 
-Compute a function's **output size and element type from immediately-available
-info — without running a pilot element**. The size/allocate twin of
+Describe a function's **output from numerical metadata without executing it**.
+The metadata API works even when intermediate values do not exist yet. The
+allocation API is the size/allocate twin of
 [MutatingFunctions.jl](https://github.com/nsiccha/MutatingFunctions.jl) (which
 *fills* a preallocated buffer): this one tells you how to *make* it.
 
 ```julia
+infer_call(f, operands::Vector{ValueInfo}) # -> CallInfo, metadata only
 output_signature(f, x, args...)   # -> (; size, eltype), no pilot run
 alloc_output(f, x, args...)       # -> similar(x, eltype, size)
 ```
 
-## Why
+## Metadata queries (v0.2)
+
+Every positional operand and keyword value uses a nonparametric `ValueInfo`.
+Dimensions, constants, and operand counts are ordinary data, not Julia type
+parameters. For example, analyze `sum(alpha .+ beta .* x .+ b[group])` without
+constructing its intermediate arrays:
+
+```julia
+using OutputSignatures
+
+alpha, beta = scalar_info(Float64), scalar_info(Float64)
+x, b, group = vector_info(Float64, 10), vector_info(Float64, 3), vector_info(Int, 10)
+gather = infer_call(getindex, ValueInfo[b, group]).value
+scaled = infer_call(broadcast, ValueInfo[known_info(*), beta, x]).value
+shifted = infer_call(broadcast, ValueInfo[known_info(+), alpha, scaled, gather]).value
+result = infer_call(sum, ValueInfo[shifted])
+type_bound(result.value)  # Float64
+value_axes(result.value)  # ()
+```
+
+`CallInfo` contains `.value`, `.status`, and `.reason`. A supported rule returns
+`:supported`, possibly with unknown extents. Missing rules or information return
+`:unknown` with an explanation and any sound partial facts. A proved broadcast
+shape conflict returns `:incompatible`. These facts describe **successful
+returns**, not purity or freedom from exceptions. Keep the ordinary operation
+and its bounds/shape checks; unknown facts disable only optimizations that need
+those facts. For example, broadcasting unknown length with length 3 has length
+3 on success, but the unknown operand must still be checked at runtime.
+
+| Constructor/accessor | Meaning |
+| --- | --- |
+| `ValueInfo()` | Unknown type, rank, axes, and constant |
+| `ValueInfo(; type_bound=Any, element_type=Any, axes=nothing)` | Explicit partial facts, without assuming operation semantics |
+| `scalar_info(T)` | Numerical scalar with type bound `T` |
+| `vector_info(T, n=nothing; container_type=Vector{T})` | Ordinary one-based Base vector, optionally unknown length |
+| `value_info(x)` | Extract type/axes, without reading elements or asserting constant contents |
+| `known_info(x)` | Explicit constant, including a callable or `nothing` |
+| `type_bound(v)`, `element_type(v)` | Sound Julia type and element-type bounds |
+| `value_axes(v)`, `value_rank(v)`, `value_length(v)` | Axes, rank, and length; unavailable facts are `nothing` |
+| `known_value(v)` | `KnownValue` with a `.value`, or `UnknownValue()` |
+
+`axes=nothing`, `axes=()`, and `axes=(nothing,)` distinguish unknown rank,
+rank zero, and a vector of unknown length. Type bounds distinguish a numerical
+scalar from a zero-dimensional array. Known empty/singleton axes remain exact.
+Array type bounds are covariant bounds where needed: unknown element type does
+not imply an exact `Vector{Any}` container.
+
+`vector_info(T, n; container_type=AbstractVector{T})` supports unavailable
+ordinary vector views, such as a view of packed parameters. It explicitly
+asserts **standard Base vector indexing and broadcast semantics** separately
+from its Julia type bound. Do not use it to bless arbitrary custom arrays.
+`value_info` recognizes dense vectors, bit vectors, and ordinary `SubArray`
+views of Base arrays with scalar/range/slice indices. Custom arrays retain
+type/axes facts but receive no standard-family claim.
+
+Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
+scalar `+`, `-`, `*`, `/`, `^`, `exp`; their broadcasts over standard vectors;
+scalar/vector integer indexing; `sum`; and scalar/vector `vcat`. Arithmetic
+rules account for Boolean results, integer-power typing, and `sum` widening.
+The closed primitive family is the boundary where these Base rules apply;
+custom numerical types require their own justified rules, not guessed promotion.
+Boolean masks retain vector rank but unknown length without inspecting values.
+Custom helpers are never run, even inside broadcast; broadcast can retain axes
+while its element result remains unknown. No Julia compiler inference is used.
+
+Keywords have the same descriptor convention,
+`kwargs=Pair{Symbol,ValueInfo}[:dims => known_info(1)]`, but keyword rules,
+matrix operations, structured returns, symbolic dimension algebra, and general
+control flow are outside this first slice. They currently return unknown.
+Rules assume the documented Base methods have not been redefined. Known mutable
+constants and boundary shapes must remain valid for the analysis using them.
+
+## Allocation API
 
 `broadcast` can preallocate its output because the **shape is fixed by the input
 axes** and only the **eltype** needs inference (`promote_op`). A reduction /
@@ -59,8 +133,7 @@ the rest are the function's ACTUAL args**: `output_size(getindex, size(A), i, id
 an arg belongs and the call is unsupported or fails; no fallback repairs it.
 `output_signature`/`alloc_output` take the arrays directly and thread the sizing
 for supported operations. This first-input-size convention is specific to the
-current allocation API; it cannot describe unavailable intermediate operands
-uniformly and is not the compiler metadata contract planned for RK/RKPPL.
+allocation API; use `infer_call` for unavailable intermediate operands.
 
 `broadcast(f, args...)` is **function-first** (the elementwise `f` comes before
 the data), so it can't use the `x`-first `output_size` contract. It gets a
@@ -73,15 +146,20 @@ broadcast_signature(f, args...)  # -> (; size, eltype)
 alloc_broadcast(f, args...)      # similar(Base.broadcasted(f, args...), …)
 ```
 
-Standalone; `v0.1.0`.
+The allocation functions remain source compatible. They keep their explicit
+unsupported-call errors and opt-in inference behavior; `infer_call` never
+delegates to them. This bridge belongs to OutputSignatures and remains for its
+existing allocation consumers until those consumers migrate. It does not
+restrict the metadata representation or make unknown facts allocatable.
 
 ## Compiler migration plan
 
-The current API preallocates from an actual first input. It cannot propagate
+The allocation API preallocates from an actual first input. It cannot propagate
 signatures through a graph whose intermediate arrays do not exist yet.
 ReactiveKernels (RK) and ReactiveKernelsPPL (RKPPL) need a separate, uniform
-metadata query. The following is the target contract and migration scope; it
-is **not** an API that `v0.1.0` already implements.
+metadata query. The bounded foundation above is implemented in `v0.2.0`.
+The following remains the broader target and incremental migration scope;
+tuple components and symbolic dimensions are not implemented yet.
 
 **Rules for the new query:**
 
@@ -127,7 +205,7 @@ numeric length nor a scalar rank establishes observation alignment.
    them with Julia results, and inventory the numerical facts consumed by the
    first compiler slice. The rejection is interim protection, not the final
    behavior for arbitrary valid Julia calls.
-1. **Minimal OS foundation:** add one metadata-only calling convention for all
+1. **Minimal OS foundation (implemented):** one metadata-only calling convention for all
    positional and keyword arguments. Start with a nonparametric descriptor
    containing a Julia type bound, partial rank/axes and an explicit known-value
    tag. Unknown is a first-class fact. Implement only the rules needed by the

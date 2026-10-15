@@ -1,3 +1,7 @@
+@testitem "Metadata-only scalar and vector signatures" begin
+    include("metadata.jl")
+end
+
 @testitem "OutputSignatures" begin
     using OutputSignatures, Test
     using Statistics: quantile, mean, std, var, median
