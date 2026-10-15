@@ -2,6 +2,10 @@
     include("metadata.jl")
 end
 
+@testitem "Metadata symbolic axes and array rules" begin
+    include("metadata_shapes.jl")
+end
+
 @testitem "OutputSignatures" begin
     using OutputSignatures, Test
     using Statistics: quantile, mean, std, var, median

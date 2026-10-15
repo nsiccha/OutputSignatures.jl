@@ -12,7 +12,7 @@ output_signature(f, x, args...)   # -> (; size, eltype), no pilot run
 alloc_output(f, x, args...)       # -> similar(x, eltype, size)
 ```
 
-## Metadata queries (v0.1.1)
+## Metadata queries (v0.1.2)
 
 Every positional operand and keyword value uses a nonparametric `ValueInfo`.
 Dimensions, constants, and operand counts are ordinary data, not Julia type
@@ -46,11 +46,14 @@ those facts. For example, broadcasting unknown length with length 3 has length
 | `ValueInfo()` | Unknown type, rank, axes, and constant |
 | `ValueInfo(; type_bound=Any, element_type=Any, axes=nothing)` | Explicit partial facts, without assuming operation semantics |
 | `scalar_info(T)` | Numerical scalar with type bound `T` |
-| `vector_info(T, n=nothing; container_type=Vector{T})` | Ordinary one-based Base vector, optionally unknown length |
+| `array_info(T, dims...; container_type=Array{T,N})` | Ordinary one-based Base array; each dim is a length, `SymbolicAxis`, or `nothing` |
+| `vector_info(T, n=nothing; ...)`, `matrix_info(T, m=nothing, n=nothing; ...)` | `array_info` for rank 1 and 2 |
+| `SymbolicAxis(name)` | A named axis of unavailable length, e.g. `SymbolicAxis(:(levels(g)))` |
 | `value_info(x)` | Extract type/axes, without reading elements or asserting constant contents |
-| `known_info(x)` | Explicit constant, including a callable or `nothing` |
+| `known_info(x)` | Explicit constant, including a callable, `:` or `nothing` |
 | `type_bound(v)`, `element_type(v)` | Sound Julia type and element-type bounds |
 | `value_axes(v)`, `value_rank(v)`, `value_length(v)` | Axes, rank, and length; unavailable facts are `nothing` |
+| `axis_length(ax)` | A known axis's length, else `nothing` |
 | `known_value(v)` | `KnownValue` with a `.value`, or `UnknownValue()` |
 
 `axes=nothing`, `axes=()`, and `axes=(nothing,)` distinguish unknown rank,
@@ -59,21 +62,64 @@ scalar from a zero-dimensional array. Known empty/singleton axes remain exact.
 Array type bounds are covariant bounds where needed: unknown element type does
 not imply an exact `Vector{Any}` container.
 
-`vector_info(T, n; container_type=AbstractVector{T})` supports unavailable
-ordinary vector views, such as a view of packed parameters. It explicitly
-asserts **standard Base vector indexing and broadcast semantics** separately
-from its Julia type bound. Do not use it to bless arbitrary custom arrays.
-`value_info` recognizes dense vectors, bit vectors, and ordinary `SubArray`
-views of Base arrays with scalar/range/slice indices. Custom arrays retain
-type/axes facts but receive no standard-family claim.
+**Symbolic axes.** A `SymbolicAxis` names a dimension whose length is not
+available yet, such as an unbound declaration's `levels(g)` or `axes(M, 2)`.
+The name is ordinary data. Equal names denote the same axis and length;
+different names may still have equal lengths. Rules carry names through
+broadcasts, products, reductions, indexing and concatenation:
+
+```julia
+N, L = SymbolicAxis(:N), SymbolicAxis(:(levels(g)))
+X, b = matrix_info(Float64, N, L), vector_info(Float64, L)
+value_axes(infer_call(*, ValueInfo[X, b]).value)     # (N,)
+value_axes(infer_call(adjoint, ValueInfo[b]).value)  # (Base.OneTo(1), L)
+value_axes(infer_call(getindex, ValueInfo[X, known_info(:), known_info(2)]).value)  # (N,)
+```
+
+Operations whose success requires equal axes (a product's inner dimension,
+undotted `+`/`-`, `hcat` rows) let a known length decide the result, then a
+name: success implies the other lengths equal it. Known unequal lengths are
+`:incompatible`. Broadcasting is different because a length-1 axis
+stretches: a symbolic axis may itself have length 1, so only a single
+distinct name among singletons stays named. `n .+ n` is `n`, `n .+ 3` is 3,
+but `n .+ p` and `n .+ unknown` have unknown length.
+
+`array_info(T, dims...; container_type=AbstractArray{T,N})` supports
+unavailable ordinary views, such as a view of packed parameters. It explicitly
+asserts **standard Base indexing and broadcast semantics** separately from its
+Julia type bound. Do not use it to bless arbitrary custom arrays. `value_info`
+recognizes dense and bit arrays, ordinary `SubArray` views of Base arrays with
+scalar/range/slice indices, and (with LinearAlgebra loaded) their adjoints and
+transposes. Custom arrays retain type/axes facts but receive no
+standard-family claim. The adjoint or transpose of a vector is tracked as a
+row vector, because Julia multiplies, adds and concatenates it differently
+from a 1×n `Matrix` (`v' * w` is a scalar).
 
 Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
-scalar `+`, `-`, `*`, `/`, `^`, `exp`; their broadcasts over standard vectors;
-Julia's `Base.literal_pow` for a known `^` and integer `Val` exponent;
-scalar/vector integer indexing; `sum`; and scalar/vector `vcat`. Arithmetic
-rules account for Boolean results, integer-power typing, and `sum` widening.
-The closed primitive family is the boundary where these Base rules apply;
-custom numerical types require their own justified rules, not guessed promotion.
+
+- scalar `+`, `-`, `*`, `/`, `^`, `exp`, `log`, `sqrt`, and their broadcasts
+  over standard arrays of any rank;
+- Julia's `Base.literal_pow` for a known `^` and integer `Val` exponent;
+- indexing: one linear index or one index per axis, each a machine integer,
+  `:` (`known_info(:)`), or a standard integer array (Boolean masks keep
+  rank with an unknown length);
+- `length`, `adjoint`, `transpose`;
+- `*` for scalar × array, matrix–vector, matrix–matrix, row-vector products
+  (dot, row × matrix, outer products) and chains of these; undotted
+  array `+`/`-` and array `/` scalar;
+- `sum`, and with the Statistics extension `mean`/`std`, fully or over
+  known `dims`;
+- `vcat` of scalars/vectors and `hcat` of scalars, vectors and matrices.
+
+Arithmetic rules account for Boolean results, integer-power typing, `sum`
+widening and LinearAlgebra's product element type. The closed primitive family
+is the boundary where these Base rules apply; custom numerical types require
+their own justified rules, not guessed promotion. Where Julia's own result
+type depends on the Julia version or on runtime sizes, the fact stays unknown:
+the dot product of two `Bool` vectors, and the element type of a chained
+product with `Bool` operands. `broadcast(f, v', 1)` returns a row vector
+whereas `v' .+ 1` returns a `Matrix`, so a broadcast over row vectors and
+scalars only keeps partial facts.
 Literal powers retain Julia's special semantics: `Int8[2] .^ -1` produces
 `Vector{Float64}`, whereas `broadcast(^, Int8[2], -1)` throws. Describe the
 former with `infer_call(broadcast, ValueInfo[known_info(Base.literal_pow),
@@ -86,9 +132,9 @@ Custom helpers are never run, even inside broadcast; broadcast can retain axes
 while its element result remains unknown. No Julia compiler inference is used.
 
 Keywords have the same descriptor convention,
-`kwargs=Pair{Symbol,ValueInfo}[:dims => known_info(1)]`, but keyword rules,
-matrix operations, structured returns, symbolic dimension algebra, and general
-control flow are outside this first slice. They currently return unknown.
+`kwargs=Pair{Symbol,ValueInfo}[:dims => known_info(1)]`. The reductions above
+accept a known `dims`; other keywords, structured returns, arithmetic between
+dimension names (`n + p`), and general control flow return unknown.
 Rules assume the documented Base methods have not been redefined. Known mutable
 constants and boundary shapes must remain valid for the analysis using them.
 
@@ -165,9 +211,11 @@ restrict the metadata representation or make unknown facts allocatable.
 The allocation API preallocates from an actual first input. It cannot propagate
 signatures through a graph whose intermediate arrays do not exist yet.
 ReactiveKernels (RK) and ReactiveKernelsPPL (RKPPL) need a separate, uniform
-metadata query. The bounded foundation above is implemented in `v0.1.1`.
-The following remains the broader target and incremental migration scope;
-tuple components and symbolic dimensions are not implemented yet.
+metadata query. The bounded foundation above is implemented in `v0.1.1`;
+`v0.1.2` adds symbolic axes and the matrix, product, concatenation and
+reduction rules RKPPL's declaration shape inference needs. The following
+remains the broader target and incremental migration scope; tuple components
+and arithmetic between dimension names are not implemented yet.
 
 **Rules for the new query:**
 
