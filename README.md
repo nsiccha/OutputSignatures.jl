@@ -69,10 +69,18 @@ type/axes facts but receive no standard-family claim.
 
 Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
 scalar `+`, `-`, `*`, `/`, `^`, `exp`; their broadcasts over standard vectors;
+Julia's `Base.literal_pow` for a known `^` and integer `Val` exponent;
 scalar/vector integer indexing; `sum`; and scalar/vector `vcat`. Arithmetic
 rules account for Boolean results, integer-power typing, and `sum` widening.
 The closed primitive family is the boundary where these Base rules apply;
 custom numerical types require their own justified rules, not guessed promotion.
+Literal powers retain Julia's special semantics: `Int8[2] .^ -1` produces
+`Vector{Float64}`, whereas `broadcast(^, Int8[2], -1)` throws. Describe the
+former with `infer_call(broadcast, ValueInfo[known_info(Base.literal_pow),
+known_info(^), vector_info(Int8, 1), known_info(Val(-1))])`. A scalar literal
+power uses `infer_call(Base.literal_pow, ValueInfo[known_info(^),
+scalar_info(Int8), known_info(Val(-1))])`. The exponent is an explicitly supplied
+Julia value, never an exponent parameter on an OS descriptor or traversal.
 Boolean masks retain vector rank but unknown length without inspecting values.
 Custom helpers are never run, even inside broadcast; broadcast can retain axes
 while its element result remains unknown. No Julia compiler inference is used.

@@ -102,6 +102,56 @@ end
     @test type_bound(opaque_elements.value) === Any
 end
 
+@testset "literal powers preserve Julia's special semantics" begin
+    types = (Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16,
+             UInt32, UInt64, UInt128, Float16, Float32, Float64)
+    for T in types, p in (-3, -2, -1, 0, 1, 2, 3, 4)
+        args = ValueInfo[known_info(^), scalar_info(T), known_info(Val(p))]
+        result = infer_call(Base.literal_pow, args)
+        actual = Base.literal_pow(^, one(T), Val(p))
+        @test result.status == :supported
+        @test type_bound(result.value) == typeof(actual)
+        @test value_axes(result.value) == axes(actual)
+        scalar_broadcast = infer_call(broadcast, ValueInfo[known_info(Base.literal_pow); args])
+        @test scalar_broadcast.status == :supported
+        @test type_bound(scalar_broadcast.value) == typeof(broadcast(Base.literal_pow, ^, one(T), Val(p)))
+        for n in (0, 1, 3)
+            x = fill(one(T), n)
+            for input in (x, view(x, :))
+                operands = ValueInfo[known_info(Base.literal_pow), known_info(^), value_info(input), known_info(Val(p))]
+                br = infer_call(broadcast, operands)
+                y = broadcast(Base.literal_pow, ^, input, Val(p))
+                @test br.status == :supported
+                @test y isa type_bound(br.value)
+                @test element_type(br.value) == eltype(y)
+                @test value_axes(br.value) == axes(y)
+            end
+        end
+    end
+    literal = infer_call(broadcast, ValueInfo[known_info(Base.literal_pow), known_info(^),
+                                             vector_info(Int8, 1), known_info(Val(-1))])
+    @test type_bound(literal.value) == typeof(Int8[2] .^ -1) == Vector{Float64}
+    @test (Int8[2] .^ -1) == [0.5]
+    # Ordinary ^ intentionally retains its different Base semantics.
+    ordinary = infer_call(broadcast, ValueInfo[known_info(^), vector_info(Int8, 1), known_info(-1)])
+    @test type_bound(ordinary.value) == Vector{Int8}
+    @test try broadcast(^, Int8[2], -1); false catch e; e isa DomainError end
+    partial = infer_call(broadcast, ValueInfo[known_info(Base.literal_pow), known_info(^),
+                                             vector_info(Int8), known_info(Val(-1))])
+    @test partial.status == :supported
+    @test value_rank(partial.value) == 1 && value_length(partial.value) === nothing
+    for exponent in (value_info(Val(-1)), known_info(Val(:opaque)), ValueInfo())
+        @test infer_call(Base.literal_pow, ValueInfo[known_info(^), scalar_info(Float64), exponent]).status == :unknown
+        br = infer_call(broadcast, ValueInfo[known_info(Base.literal_pow), known_info(^), vector_info(Float64,3), exponent])
+        @test br.status == :unknown
+    end
+    calls = Ref(0)
+    other_power(x, p) = (calls[] += 1; x^p)
+    @test infer_call(Base.literal_pow, ValueInfo[known_info(other_power), scalar_info(Int8), known_info(Val(-1))]).status == :unknown
+    @test infer_call(broadcast, ValueInfo[known_info(Base.literal_pow), known_info(other_power), vector_info(Int8,3), known_info(Val(-1))]).status == :unknown
+    @test calls[] == 0
+end
+
 @testset "broadcast singleton, empty, mixed types and views" begin
     for n in (0, 1, 3), T in (Bool, Int8, UInt8, Float16, Float32, Float64)
         x = fill(one(T), n)
