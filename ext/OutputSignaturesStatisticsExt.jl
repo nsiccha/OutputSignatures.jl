@@ -1,7 +1,7 @@
 module OutputSignaturesStatisticsExt
 
 import OutputSignatures: output_size, output_eltype
-using OutputSignatures: ValueInfo
+using OutputSignatures: ValueInfo, _floating
 import OutputSignatures: _infer_call, _reduction_call, _reduction_type
 import Statistics
 
@@ -25,11 +25,11 @@ output_eltype(::typeof(Statistics.var), T::Type) = real(float(T))
 output_size(::typeof(Statistics.median), ::Tuple) = ()
 output_eltype(::typeof(Statistics.median), T::Type) = float(T)
 
-# Metadata: mean/std reduce like sum (fully, or along known `dims`). Their
+# Metadata: mean/std/var reduce like sum (fully, or along known `dims`). Their
 # floating result keeps Float16/32/64 and turns machine integers into Float64.
-const _MeanStd = Union{typeof(Statistics.mean),typeof(Statistics.std)}
-_reduction_type(::_MeanStd, T::Type) = T <: Integer ? Float64 : T
-_infer_call(f::_MeanStd, args::Vector{ValueInfo}, kwargs::Vector{Pair{Symbol,ValueInfo}}) =
+const _Moment = Union{typeof(Statistics.mean),typeof(Statistics.std),typeof(Statistics.var)}
+_reduction_type(::_Moment, T::Type) = _floating(T)
+_infer_call(f::_Moment, args::Vector{ValueInfo}, kwargs::Vector{Pair{Symbol,ValueInfo}}) =
     _reduction_call(f, args, kwargs)
 
 end # module

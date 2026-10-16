@@ -12,7 +12,7 @@ output_signature(f, x, args...)   # -> (; size, eltype), no pilot run
 alloc_output(f, x, args...)       # -> similar(x, eltype, size)
 ```
 
-## Metadata queries (v0.1.3)
+## Metadata queries (v0.1.4)
 
 Every positional operand and keyword value uses a nonparametric `ValueInfo`.
 Dimensions, constants, and operand counts are ordinary data, not Julia type
@@ -97,8 +97,10 @@ from a 1×n `Matrix` (`v' * w` is a scalar).
 
 Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
 
-- scalar `+`, `-`, `*`, `/`, `^`, `exp`, `log`, `sqrt`, and their broadcasts
-  over standard arrays of any rank;
+- scalar `+`, `-`, `*`, `/`, `^`, `exp`, `expm1`, `log`, `log10`, `log1p`,
+  `sqrt`, `tanh`, `abs`, and their broadcasts over standard arrays of any
+  rank; with the LogExpFunctions extension also `logistic` and two-argument
+  `logaddexp`;
 - Julia's `Base.literal_pow` for a known `^` and integer `Val` exponent;
 - indexing: one linear index or one index per axis, each a machine integer,
   `:` (`known_info(:)`), or a standard integer array (Boolean masks keep
@@ -107,8 +109,8 @@ Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
 - `*` for scalar × array, matrix–vector, matrix–matrix, row-vector products
   (dot, row × matrix, outer products) and chains of these; undotted
   array `+`/`-` and array `/` scalar;
-- `sum`, and with the Statistics extension `mean`/`std`, fully or over
-  known `dims`;
+- `sum`, `minimum`, `maximum`, and with the Statistics extension
+  `mean`/`std`/`var`, fully or over known `dims`;
 - `cumsum`/`cumprod`, which keep their operand's axes: a vector with or
   without `dims`, and any standard array or row vector over a known integer
   `dims` (a row vector stays a row). Julia iterates a scalar operand into a
@@ -116,9 +118,14 @@ Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
 - `vcat` of scalars/vectors and `hcat` of scalars, vectors and matrices.
 
 Arithmetic rules account for Boolean results, integer-power typing,
-`sum`/`cumsum`/`cumprod` widening and LinearAlgebra's product element type. The
-closed primitive family is the boundary where these Base rules apply; custom
-numerical types require their own justified rules, not guessed promotion. Where Julia's own result
+`sum`/`cumsum`/`cumprod` widening and LinearAlgebra's product element type.
+Floating functions (and `mean`/`std`/`var`) return `Float64` for machine
+integers and `Bool` and keep `Float16/32/64`; `abs`, `minimum` and `maximum`
+keep the element type, and a `Bool` `minimum`/`maximum` over `dims` of a
+`BitArray` (or a view of one) stays a `BitArray`. `logaddexp` returns the
+floating type of its promoted operands. The closed primitive family
+is the boundary where these Base rules apply; custom numerical types require
+their own justified rules, not guessed promotion. Where Julia's own result
 type depends on the Julia version or on runtime sizes, the fact stays unknown:
 the dot product of two `Bool` vectors, and the element type of a chained
 product with `Bool` operands. `broadcast(f, v', 1)` returns a row vector
@@ -218,10 +225,12 @@ signatures through a graph whose intermediate arrays do not exist yet.
 ReactiveKernels (RK) and ReactiveKernelsPPL (RKPPL) need a separate, uniform
 metadata query. The bounded foundation above is implemented in `v0.1.1`;
 `v0.1.2` adds symbolic axes and the matrix, product, concatenation and
-reduction rules RKPPL's declaration shape inference needs, and `v0.1.3` adds
-`cumsum`/`cumprod`. The following remains the broader target and incremental
-migration scope; tuple components and arithmetic between dimension names are
-not implemented yet.
+reduction rules RKPPL's declaration shape inference needs, `v0.1.3` the
+remaining scalar functions and reductions of RKPPL's assignment functions
+(`log10`, `log1p`, `expm1`, `abs`, `tanh`, `logaddexp`, `logistic`, `var`,
+`minimum`, `maximum`), and `v0.1.4` `cumsum`/`cumprod`. The following
+remains the broader target and incremental migration scope; tuple components
+and arithmetic between dimension names are not implemented yet.
 
 **Rules for the new query:**
 
