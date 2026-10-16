@@ -192,8 +192,8 @@ facts.
 The original runtime operation must retain its bounds and shape checks. In
 particular, broadcast facts may be exact *conditional on compatible axes*.
 Rules describe the Base and LinearAlgebra methods of these functions (and
-Statistics', when that extension is loaded); redefining them invalidates the
-rules.
+Statistics' or LogExpFunctions', when that extension is loaded); redefining
+them invalidates the rules.
 """
 function infer_call(@nospecialize(f), args::Vector{ValueInfo};
                     kwargs::Vector{Pair{Symbol,ValueInfo}}=Pair{Symbol,ValueInfo}[])
@@ -331,11 +331,17 @@ function _scalar_result_type(::typeof(Base.literal_pow), args::Vector{ValueInfo}
     T <: Integer && p < 0 ? Float64 : T
 end
 
-const _FloatingUnary = Union{typeof(exp),typeof(log),typeof(sqrt)}
-const _Arithmetic = Union{typeof(+),typeof(-),typeof(*),typeof(/),typeof(^),_FloatingUnary}
+# Real scalar functions of one argument. The floating ones return Float64 for
+# machine integers (Bool included) and keep Float16/32/64; abs keeps its
+# argument's type (abs(true) === true).
+const _FloatingUnary = Union{typeof(exp),typeof(expm1),typeof(log),typeof(log10),typeof(log1p),
+                             typeof(sqrt),typeof(tanh)}
+const _Unary = Union{_FloatingUnary,typeof(abs)}
+const _Arithmetic = Union{typeof(+),typeof(-),typeof(*),typeof(/),typeof(^),_Unary}
+_floating(T::Type) = T <: Integer ? Float64 : T
 _unary_type(::Union{typeof(+),typeof(-)}, T::Type) = T === Bool ? Int : T
-_unary_type(::typeof(*), T::Type) = T
-_unary_type(::_FloatingUnary, T::Type) = T <: Integer ? Float64 : T
+_unary_type(::Union{typeof(*),typeof(abs)}, T::Type) = T
+_unary_type(::_FloatingUnary, T::Type) = _floating(T)
 _binary_type(::Union{typeof(+),typeof(-)}, A::Type, B::Type) =
     A === Bool && B === Bool ? Int : promote_type(A, B)
 _binary_type(::typeof(*), A::Type, B::Type) = promote_type(A, B)
@@ -365,16 +371,20 @@ function _arithmetic_type(f::typeof(-), ts::Vector{Type})
 end
 _arithmetic_type(f::Union{typeof(/),typeof(^)}, ts::Vector{Type}) =
     length(ts) == 2 ? _binary_type(f, ts[1], ts[2]) : nothing
-_arithmetic_type(f::_FloatingUnary, ts::Vector{Type}) =
+_arithmetic_type(f::_Unary, ts::Vector{Type}) =
     length(ts) == 1 ? _unary_type(f, ts[1]) : nothing
 
 # ── arithmetic: scalars, then the array methods of the same functions ───
 
-function _infer_call(f::_Arithmetic, args::Vector{ValueInfo})
+# A scalar function's scalar call follows its type algebra; array operands
+# use that function's array methods, if it has any. Extensions reuse this for
+# their own scalar functions.
+function _scalar_function_call(@nospecialize(f), args::Vector{ValueInfo})
     all(_is_scalar, args) || return _array_call(f, args)
     T = _scalar_result_type(f, args)
     T === nothing ? _unknown("no scalar rule for these operand types or arity") : _supported(scalar_info(T))
 end
+_infer_call(f::_Arithmetic, args::Vector{ValueInfo}) = _scalar_function_call(f, args)
 _array_call(@nospecialize(f), ::Vector{ValueInfo}) =
     _unknown("this operation has no rule for array operands")
 
@@ -605,7 +615,9 @@ _sum_type(T::Type{Bool}) = Int
 _sum_type(T::Type{<:Signed}) = sizeof(T) < sizeof(Int) ? Int : T
 _sum_type(T::Type{<:Unsigned}) = sizeof(T) < sizeof(UInt) ? UInt : T
 _sum_type(T::Type{<:AbstractFloat}) = T
+const _Extremum = Union{typeof(minimum),typeof(maximum)}
 _reduction_type(::typeof(sum), T::Type) = _sum_type(T)
+_reduction_type(::_Extremum, T::Type) = T
 _reduces_scalar(@nospecialize(f)) = false
 _reduces_scalar(::typeof(sum)) = true
 
@@ -616,6 +628,14 @@ function _known_dims(v::ValueInfo)
     dim(x) = x isa Int && x >= 1
     dim(d) && return (d,)
     d isa Tuple && all(dim, d) ? d : nothing
+end
+
+# Base allocates a `dims` reduction as similar(A, S, dims): an Array, except
+# that a Bool result over BitArray storage (or a view of it) is a BitArray.
+function _reduced_container(a::ValueInfo, S::Type, N::Int)
+    S === Bool || return Array{S,N}
+    B = type_bound(a)
+    B <: Array ? Array{Bool,N} : B <: BitArray ? BitArray{N} : AbstractArray{Bool,N}
 end
 
 # A full reduction is a scalar. With `dims`, each reduced axis that exists has
@@ -635,9 +655,9 @@ function _reduction_call(f, args::Vector{ValueInfo}, kwargs::Vector{Pair{Symbol,
     for d in dims
         d <= length(axs) && (axs[d] = Base.OneTo(1))
     end
-    _supported(_array_result(S, Tuple(axs); container_type=Array{S,length(axs)}))
+    _supported(_array_result(S, Tuple(axs); container_type=_reduced_container(a, S, length(axs))))
 end
-_infer_call(f::typeof(sum), args::Vector{ValueInfo}, kwargs::Vector{Pair{Symbol,ValueInfo}}) =
+_infer_call(f::Union{typeof(sum),_Extremum}, args::Vector{ValueInfo}, kwargs::Vector{Pair{Symbol,ValueInfo}}) =
     _reduction_call(f, args, kwargs)
 
 # ── concatenation ───────────────────────────────────────────────────────

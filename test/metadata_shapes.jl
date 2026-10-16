@@ -1,4 +1,4 @@
-using Test, OutputSignatures, LinearAlgebra, Statistics
+using Test, OutputSignatures, LinearAlgebra, Statistics, LogExpFunctions
 
 # Property checks for symbolic/unknown axes. A case is an expression over
 # leaves whose axes are known lengths, symbolic names, or unknown lengths. For
@@ -45,7 +45,7 @@ function meta(x::Leaf)
     x.container === :scalar && return scalar_info(x.T)
     N = length(x.dims)
     container_type = x.container === :bit ? BitArray{N} :
-                     x.container === :view ? AbstractArray{x.T,N} : Array{x.T,N}
+                     x.container in (:view, :bitview) ? AbstractArray{x.T,N} : Array{x.T,N}
     array_info(x.T, map(_descr_axis, x.dims)...; container_type)
 end
 meta(x::Known) = known_info(x.value)
@@ -58,6 +58,7 @@ function actual(x::Leaf, b)
     lens = map(d -> _length(d, b), x.dims)
     x.container === :bit && return trues(lens...)
     x.container === :view && return view(fill(one(x.T), (lens .+ 1)...), map(n -> 1:n, lens)...)
+    x.container === :bitview && return view(trues((lens .+ 1)...), map(n -> 1:n, lens)...)
     fill(one(x.T), lens...)
 end
 actual(x::Known, b) = x.value
@@ -287,10 +288,13 @@ end
 end
 
 @testset "reductions with and without dims" begin
-    for T in SHAPE_TYPES, f in (sum, mean, std)
+    # minimum/maximum keep a Bool result in BitArray storage when reducing a
+    # BitArray or a view of one along dims; the other reductions widen Bool.
+    for T in SHAPE_TYPES, f in (sum, mean, std, var, minimum, maximum)
         for x in (arr(T, :m, :n), arr(T, :n), arr(T, Unknown(:u), :n; container=:view),
                   flip(adjoint, arr(T, :n)), flip(transpose, arr(T, :n, :m)),
-                  (T === Bool ? (arr(T, :m, :n; container=:bit),) : ())...)
+                  (T === Bool ? (arr(T, :m, :n; container=:bit), arr(T, :m, :n; container=:bitview),
+                                 arr(T, :n; container=:bit)) : ())...)
             check_case(call(f, x))
             for dims in (1, 2, 3, (1, 2), (2,), (), (2, 2))
                 check_case(call(f, x; dims=Known(dims)))
@@ -333,17 +337,19 @@ end
     end
 end
 
-@testset "log, sqrt, mean and std element types match Julia" begin
-    types = (Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16,
-             UInt32, UInt64, UInt128, Float16, Float32, Float64)
-    for T in types
-        for f in (log, sqrt)
+const MACHINE_TYPES = (Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16,
+                       UInt32, UInt64, UInt128, Float16, Float32, Float64)
+const UNARY_FUNCTIONS = (exp, expm1, log, log10, log1p, sqrt, abs, tanh)
+
+@testset "unary scalar functions and reductions: element types match Julia" begin
+    for T in MACHINE_TYPES
+        for f in UNARY_FUNCTIONS
             r = infer_call(f, ValueInfo[value_info(one(T))])
             @test r.status === :supported && type_bound(r.value) === typeof(f(one(T)))
             b = infer_call(broadcast, ValueInfo[known_info(f), value_info([one(T)])])
             @test b.status === :supported && type_bound(b.value) === typeof(f.([one(T)]))
         end
-        for f in (mean, std), x in (fill(one(T), 3), fill(one(T), 2, 2))
+        for f in (mean, std, var, minimum, maximum), x in (fill(one(T), 3), fill(one(T), 2, 2))
             r = infer_call(f, ValueInfo[value_info(x)])
             @test r.status === :supported && type_bound(r.value) === typeof(f(x))
             d = infer_call(f, ValueInfo[value_info(x)]; kwargs=[:dims => known_info(1)])
@@ -351,6 +357,40 @@ end
             @test value_axes(d.value) == axes(f(x; dims=1))
         end
     end
+    for T in SHAPE_TYPES, f in UNARY_FUNCTIONS
+        check_case(call(f, scalar(T)))
+        check_case(call(broadcast, Known(f), arr(T, :m, :n)))
+        check_case(call(broadcast, Known(f), flip(adjoint, arr(T, :n))); status=:unknown)
+    end
+    # The scalar methods do not apply to arrays or to a second operand.
+    @test infer_call(abs, ValueInfo[vector_info(Float64, 2)]).status === :unknown
+    @test infer_call(tanh, ValueInfo[scalar_info(Float64), scalar_info(Float64)]).status === :unknown
+end
+
+@testset "LogExpFunctions extension: logaddexp and logistic" begin
+    for T in MACHINE_TYPES
+        r = infer_call(logistic, ValueInfo[value_info(one(T))])
+        @test r.status === :supported && type_bound(r.value) === typeof(logistic(one(T)))
+        b = infer_call(broadcast, ValueInfo[known_info(logistic), value_info([one(T)])])
+        @test b.status === :supported && type_bound(b.value) === typeof(logistic.([one(T)]))
+        for S in MACHINE_TYPES
+            r = infer_call(logaddexp, ValueInfo[value_info(one(T)), value_info(one(S))])
+            @test r.status === :supported && type_bound(r.value) === typeof(logaddexp(one(T), one(S)))
+            b = infer_call(broadcast, ValueInfo[known_info(logaddexp), value_info([one(T)]), value_info(one(S))])
+            @test b.status === :supported && type_bound(b.value) === typeof(logaddexp.([one(T)], one(S)))
+        end
+    end
+    for T in SHAPE_TYPES, S in (Bool, Int8, Float64)
+        bc(f, xs...) = call(broadcast, Known(f), xs...)
+        check_case(call(logistic, scalar(T)))
+        check_case(call(logaddexp, scalar(T), scalar(S)))
+        check_case(bc(logistic, arr(T, :m, :n)))
+        check_case(bc(logaddexp, arr(T, :m, :n), arr(S, :m)))
+        check_case(bc(logaddexp, arr(T, :n), scalar(S)))
+        check_case(bc(logaddexp, arr(T, 2), arr(S, 3)); status=:incompatible)
+    end
+    @test infer_call(logaddexp, ValueInfo[scalar_info(Float64)]).status === :unknown
+    @test infer_call(logaddexp, ValueInfo[vector_info(Float64, 2), vector_info(Float64, 2)]).status === :unknown
 end
 
 @testset "product element types match Julia for every machine type pair" begin
