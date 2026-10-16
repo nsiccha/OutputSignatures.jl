@@ -219,8 +219,8 @@ _matrix(v::ValueInfo) = v.family === :standard_array && value_rank(v) == 2
 _element_info(T::Type) = T <: Number ? scalar_info(T) : ValueInfo(type_bound=T)
 _array_result(T::Type, axs::Tuple; container_type::Type) =
     ValueInfo(container_type, T, axs, UnknownValue(), :standard_array)
-_row_result(kind::Symbol, T::Type, ax) =
-    ValueInfo(AbstractMatrix{T}, T, (Base.OneTo(1), ax), UnknownValue(), kind)
+_row_result(kind::Symbol, T::Type, ax; container_type::Type=AbstractMatrix{T}) =
+    ValueInfo(container_type, T, (Base.OneTo(1), ax), UnknownValue(), kind)
 # Base materializes elementwise results as Arrays, packing Bool into BitArrays.
 # Arithmetic on a wrapper such as a flipped matrix may keep the wrapper, so
 # only operands of plain storage promise the materialized container.
@@ -664,13 +664,26 @@ _infer_call(f::Union{typeof(sum),_Extremum}, args::Vector{ValueInfo}, kwargs::Ve
 
 # ── concatenation ───────────────────────────────────────────────────────
 
+# Base's and LinearAlgebra's concatenation methods for standard arrays take
+# the result's axes and container from the parts' axes and kinds alone; they
+# never splice or inspect elements. So an array part of any element type keeps
+# those facts. A scalar part must be machine-real, since another Number type
+# may bring its own methods. Only the promoted element type needs every part
+# to be machine-real; otherwise it is unknown (`nothing`), and the shape is
+# kept with an `Any` bound, as for a broadcast without a scalar rule.
+_concatenated_eltype(args::Vector{ValueInfo}) =
+    all(v -> _machine(element_type(v)), args) ? mapreduce(element_type, promote_type, args) : nothing
+_eltype_bound(C::UnionAll, T) = T === nothing ? C : C{T}
+_concatenation(T, v::ValueInfo) = T === nothing ?
+    _unknown("the concatenated element type requires machine-real parts", v) : _supported(v)
+
 function _infer_call(::typeof(vcat), args::Vector{ValueInfo})
     isempty(args) && return _unknown("empty argument list has no vcat rule")
-    all(v -> (_vector(v) || _is_scalar(v)) && _machine(element_type(v)), args) ||
-        return _unknown("vcat requires standard machine-real scalars/vectors")
-    T = mapreduce(element_type, promote_type, args)
+    all(v -> _vector(v) || _machine_scalar(v), args) ||
+        return _unknown("vcat requires standard vectors and machine-real scalars")
+    T = _concatenated_eltype(args)
     n = _concatenated_axis(Any[_is_scalar(v) ? Base.OneTo(1) : value_axes(v)[1] for v in args])
-    _supported(_array_result(T, (n,); container_type=AbstractVector{T}))
+    _concatenation(T, _array_result(something(T, Any), (n,); container_type=_eltype_bound(AbstractVector, T)))
 end
 
 # hcat treats a scalar as 1×1 and a vector as one column; all parts need equal
@@ -678,17 +691,20 @@ end
 # concatenates their parents); all scalars or any other mix give a matrix.
 function _infer_call(::typeof(hcat), args::Vector{ValueInfo})
     isempty(args) && return _unknown("empty argument list has no hcat rule")
-    all(v -> (_array(v) && value_rank(v) <= 2 || _is_scalar(v)) && _machine(element_type(v)), args) ||
-        return _unknown("hcat requires standard machine-real scalars, vectors and matrices")
-    T = mapreduce(element_type, promote_type, args)
+    all(v -> _array(v) && value_rank(v) <= 2 || _machine_scalar(v), args) ||
+        return _unknown("hcat requires standard arrays of rank ≤ 2 and machine-real scalars")
     rows = _equal_axis(Any[_is_scalar(v) ? Base.OneTo(1) : value_axes(v)[1] for v in args])
     rows === _CONFLICT && return _incompatible("hcat operands have different row counts")
     cols = _concatenated_axis(Any[value_rank(v) == 2 ? value_axes(v)[2] : Base.OneTo(1) for v in args])
+    T = _concatenated_eltype(args)
+    E = something(T, Any)
     parts = filter(!_is_scalar, args)
-    isempty(parts) && return _supported(_array_result(T, (rows, cols); container_type=Matrix{T}))
+    isempty(parts) &&
+        return _concatenation(T, _array_result(E, (rows, cols); container_type=_eltype_bound(Matrix, T)))
     kind = parts[1].family
-    _row(parts[1]) && all(v -> v.family === kind, parts) && return _supported(_row_result(kind, T, cols))
-    _supported(_array_result(T, (rows, cols); container_type=AbstractMatrix{T}))
+    _row(parts[1]) && all(v -> v.family === kind, parts) &&
+        return _concatenation(T, _row_result(kind, E, cols; container_type=_eltype_bound(AbstractMatrix, T)))
+    _concatenation(T, _array_result(E, (rows, cols); container_type=_eltype_bound(AbstractMatrix, T)))
 end
 
 # ── scans ───────────────────────────────────────────────────────────────

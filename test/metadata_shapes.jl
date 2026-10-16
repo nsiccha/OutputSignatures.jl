@@ -71,7 +71,7 @@ axis_holds(::Nothing, n, b) = true
 
 # A supported descriptor is exact: element type, axes, rank, Julia type bound
 # and the container family that later rules rely on (row vector or array).
-function facts_hold(info::ValueInfo, x, b; exact::Bool)
+function facts_hold(info::ValueInfo, x, b; exact::Bool, family::Bool=exact)
     x isa type_bound(info) || return false
     E = x isa AbstractArray ? eltype(x) : typeof(x)
     (exact ? E == element_type(info) : E <: element_type(info)) || return false
@@ -79,7 +79,7 @@ function facts_hold(info::ValueInfo, x, b; exact::Bool)
     axs === nothing && return true
     length(axs) == ndims(x) || return false
     all(axis_holds(a, n, b) for (a, n) in zip(axs, size(x))) || return false
-    !exact || value_info(x).family === info.family
+    !family || value_info(x).family === info.family
 end
 
 bindings(names) = isempty(names) ? [Dict{Symbol,Int}()] :
@@ -92,7 +92,8 @@ show_case(c::Call) = "$(c.f)(" * join(map(show_case, c.args), ", ") * join(("; $
 # Operands built by calls (row vectors, chains) must themselves be supported.
 supported_operands(c::Call) = all(a -> !(a isa Call) || infer(a).status === :supported && supported_operands(a), c.args)
 
-function check_case(c::Call; status=:supported)
+# `family=true` also checks the container family of a partial (unknown) result.
+function check_case(c::Call; status=:supported, family::Bool=status === :supported)
     @test supported_operands(c)
     result = infer(c)
     @test result.status === status
@@ -110,7 +111,7 @@ function check_case(c::Call; status=:supported)
         successes += 1
         @test status !== :incompatible
         status === :incompatible && break
-        ok = facts_hold(result.value, x, b; exact=status === :supported)
+        ok = facts_hold(result.value, x, b; exact=status === :supported, family)
         ok || println("FACTS FAIL: ", show_case(c), " => ", typeof(x), " ", axes(x), " claimed ", type_bound(result.value), " ", value_axes(result.value), " ", result.value.family, " ", b)
         @test ok
     end
@@ -285,6 +286,71 @@ end
     end
     @test infer_call(hcat, ValueInfo[]).status === :unknown
     @test infer_call(hcat, ValueInfo[array_info(Float64, 2, 2, 2)]).status === :unknown
+end
+
+# Scalar functions without an OS rule: a broadcast of one keeps its axes with
+# an unknown element type. Their results cover Base's container choices (Bool
+# packs into a BitArray) and elements that are themselves arrays.
+opaque_real(x) = x
+opaque_bool(x) = x > 0
+opaque_vector(x) = [x]
+opaque_string(x) = "s"
+
+# An operand known only partially, such as such a broadcast. Its own status is
+# unknown, so `supported_operands` does not apply to it.
+struct Partial
+    call::Call
+end
+names_of(p::Partial) = names_of(p.call)
+meta(p::Partial) = infer(p.call).value
+actual(p::Partial, b) = actual(p.call, b)
+show_case(p::Partial) = "partial " * show_case(p.call)
+
+# The same expression over machine-real element types, whose result is exact.
+machine(x::Leaf) = x.T === BigFloat ? Leaf(Float64, x.dims, x.container) : x
+machine(p::Partial) = Call(broadcast, Any[Known(exp); p.call.args[2:end]], p.call.kwargs)
+machine(c::Call) = Call(c.f, map(machine, c.args), c.kwargs)
+
+@testset "concatenation shapes do not depend on the element type" begin
+    # RKPPL's `X = hcat(ones(length(x)), f.(a .* x))` with an opaque `f`: the
+    # result keeps exactly the shape facts of its machine-real analog.
+    for f in (opaque_real, opaque_bool, opaque_vector, opaque_string), container in (:array, :view)
+        bc(xs...) = call(broadcast, xs...)
+        o = Partial(bc(Known(f), bc(Known(*), scalar(Float64), arr(Float64, :n; container))))
+        @test infer(o.call).status === :unknown
+        hcats = Any[(arr(Float64, :n), o), (o, arr(Bool, :n; container=:bit)), (o,), (o, o),
+                    (arr(Int8, :n, :p), o, arr(BigFloat, :n)), (o, arr(Float64, Unknown(:u))),
+                    (arr(BigFloat, :n, 2; container), scalar(Bool))]
+        vcats = Any[(o,), (scalar(Float64), o), (o, arr(Int8, :n), scalar(Bool)), (arr(BigFloat, :p), o)]
+        for (g, parts) in Iterators.flatten((((hcat, p) for p in hcats), ((vcat, p) for p in vcats)))
+            c = call(g, parts...)
+            r = check_case(c; status=:unknown, family=true)
+            s = infer(machine(c))
+            @test s.status === :supported
+            @test value_axes(r.value) == value_axes(s.value) && r.value.family === s.value.family
+        end
+        # Different known row counts still fail for every element type.
+        o2 = Partial(bc(Known(f), arr(Float64, 2; container)))
+        check_case(call(hcat, o2, arr(Float64, 3)); status=:incompatible)
+        check_case(call(hcat, scalar(Float64), o2); status=:incompatible)
+    end
+    # Rows of any element type stay rows: LinearAlgebra concatenates parents.
+    for v in (Any[1, 2.0], BigFloat[1, 2], [[1.0], [2.0]]),
+        (f, g) in ((adjoint, adjoint), (transpose, transpose), (adjoint, transpose))
+        for xs in ((f(v), 1.0), (f(v), g(v)), (1, f(v), true), (f(v), fill(1.0, 1, 2)))
+            r = infer_call(hcat, ValueInfo[value_info(x) for x in xs])
+            y = hcat(xs...)
+            @test r.status === :unknown
+            @test y isa type_bound(r.value) && eltype(y) <: element_type(r.value)
+            @test value_axes(r.value) == axes(y) && value_info(y).family === r.value.family
+        end
+    end
+    # A scalar of another Number type may bring its own methods, and an
+    # operand without the standard-array family may be a custom array.
+    for g in (hcat, vcat), x in (scalar_info(BigFloat), ValueInfo(type_bound=AbstractVector, axes=(Base.OneTo(2),)))
+        r = infer_call(g, ValueInfo[x, vector_info(Float64, 2)])
+        @test r.status === :unknown && value_axes(r.value) === nothing
+    end
 end
 
 @testset "reductions with and without dims" begin

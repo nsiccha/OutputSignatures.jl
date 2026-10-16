@@ -12,7 +12,7 @@ output_signature(f, x, args...)   # -> (; size, eltype), no pilot run
 alloc_output(f, x, args...)       # -> similar(x, eltype, size)
 ```
 
-## Metadata queries (v0.1.4)
+## Metadata queries (v0.1.5)
 
 Every positional operand and keyword value uses a nonparametric `ValueInfo`.
 Dimensions, constants, and operand counts are ordinary data, not Julia type
@@ -116,6 +116,11 @@ Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
   `dims` (a row vector stays a row). Julia iterates a scalar operand into a
   zero-dimensional `Array`, which is what they describe;
 - `vcat` of scalars/vectors and `hcat` of scalars, vectors and matrices.
+  Their axes and container family follow from the parts' axes and kinds
+  alone, so an array part of any element type keeps them (for example the
+  broadcast of a function without a scalar rule). The element type needs
+  machine-real parts; otherwise the result is `:unknown` with element type
+  `Any`. Scalar parts must be machine-real.
 
 Arithmetic rules account for Boolean results, integer-power typing,
 `sum`/`cumsum`/`cumprod` widening and LinearAlgebra's product element type.
@@ -228,7 +233,8 @@ metadata query. The bounded foundation above is implemented in `v0.1.1`;
 reduction rules RKPPL's declaration shape inference needs, `v0.1.3` the
 remaining scalar functions and reductions of RKPPL's assignment functions
 (`log10`, `log1p`, `expm1`, `abs`, `tanh`, `logaddexp`, `logistic`, `var`,
-`minimum`, `maximum`), and `v0.1.4` `cumsum`/`cumprod`. The following
+`minimum`, `maximum`), `v0.1.4` `cumsum`/`cumprod`, and `v0.1.5` keeps
+concatenation shapes for array parts of any element type. The following
 remains the broader target and incremental migration scope; tuple components
 and arithmetic between dimension names are not implemented yet.
 
