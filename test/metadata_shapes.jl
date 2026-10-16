@@ -306,6 +306,47 @@ end
     @test infer_call(sum, ValueInfo[scalar_info(Float64)]; kwargs=[:dims => known_info(1)]).status === :unknown
 end
 
+@testset "cumsum and cumprod keep axes, with and without dims" begin
+    for T in SHAPE_TYPES, f in (cumsum, cumprod)
+        bit = T === Bool ? (:bit,) : ()
+        for container in (:array, :view, bit...)
+            for x in (arr(T, :n; container), arr(T, Unknown(:u); container), arr(T, 0; container))
+                check_case(call(f, x))
+            end
+        end
+        for x in (arr(T, :n), arr(T, :m, :n), arr(T, Unknown(:u), :n; container=:view),
+                  arr(T, :m, 2, :p), flip(adjoint, arr(T, :n)), flip(transpose, arr(T, :n)),
+                  flip(adjoint, arr(T, :n, :m)), flip(transpose, arr(T, :n, :m; container=:view)),
+                  (T === Bool ? (arr(T, :m, :n; container=:bit), flip(transpose, arr(T, :n; container=:bit)),
+                                 flip(adjoint, arr(T, :n, :m; container=:bit))) : ())...)
+            for dims in (1, 2, 3)
+                check_case(call(f, x; dims=Known(dims)))
+            end
+        end
+        # Base iterates a scalar into a zero-dimensional Array, not a scalar.
+        check_case(call(f, scalar(T)))
+        # Base requires dims for a row vector or an array of rank ≥ 2
+        # (UndefKeywordError), and takes one integer, never a tuple.
+        for x in (matrix_info(T, 2, 2), infer_call(adjoint, ValueInfo[vector_info(T, 2)]).value)
+            @test infer_call(f, ValueInfo[x]).status === :unknown
+        end
+        M = matrix_info(T, 2, 2)
+        for dims in (known_info((1,)), known_info(0), known_info(true), scalar_info(Int))
+            @test infer_call(f, ValueInfo[M]; kwargs=[:dims => dims]).status === :unknown
+        end
+        @test infer_call(f, ValueInfo[M]; kwargs=[:init => known_info(zero(T))]).status === :unknown
+        @test infer_call(f, ValueInfo[scalar_info(T)]; kwargs=[:dims => known_info(1)]).status === :unknown
+    end
+    @test infer_call(cumsum, ValueInfo[vector_info(Real, 3)]).status === :unknown
+    @test infer_call(cumsum, ValueInfo[ValueInfo(type_bound=AbstractVector{Float64}, element_type=Float64, axes=(nothing,))]).status === :unknown
+    # RKPPL's `m = cumsum(vcat(0.0, s))[c]; sum(m)`: every fact survives the scan.
+    for s in (arr(Float64, 2), arr(Float64, :n)), c in (arr(Int, :k), arr(Int, 2, :k))
+        m = call(getindex, call(cumsum, call(vcat, scalar(Float64), s)), c)
+        check_case(m)
+        check_case(call(sum, m))
+    end
+end
+
 @testset "broadcast carries names, never assumes a name is non-singleton" begin
     for T in SHAPE_TYPES, S in (Bool, Int8, Float64)
         bc(f, xs...) = call(broadcast, Known(f), xs...)
@@ -350,6 +391,34 @@ end
             @test d.status === :supported && type_bound(d.value) === typeof(f(x; dims=1))
             @test value_axes(d.value) == axes(f(x; dims=1))
         end
+    end
+end
+
+@testset "cumsum and cumprod element types match Julia" begin
+    types = (Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16,
+             UInt32, UInt64, UInt128, Float16, Float32, Float64)
+    for T in types, f in (cumsum, cumprod)
+        x, M = fill(one(T), 3), fill(one(T), 2, 2)
+        for a in (x, view(x, 1:2), one(T))
+            r = infer_call(f, ValueInfo[value_info(a)])
+            y = f(a)
+            @test r.status === :supported && y isa type_bound(r.value) && eltype(y) === element_type(r.value)
+            @test value_axes(r.value) == axes(y)
+            # Only a Bool result over a view stays abstract (Array or BitArray).
+            a isa SubArray && eltype(y) === Bool || @test type_bound(r.value) === typeof(y)
+        end
+        for (a, d) in ((M, 1), (M, 2), (x, 2), (M', 1), (x', 2), (transpose(x), 1))
+            r = infer_call(f, ValueInfo[value_info(a)]; kwargs=[:dims => known_info(d)])
+            y = f(a; dims=d)
+            @test r.status === :supported && y isa type_bound(r.value) && eltype(y) === element_type(r.value)
+            @test value_axes(r.value) == axes(y) && value_info(y).family === r.value.family
+        end
+    end
+    for f in (cumsum, cumprod), a in (trues(3), view(trues(4), 1:3), view(fill(true, 4), 1:3))
+        r = infer_call(f, ValueInfo[value_info(a)])
+        y = f(a)
+        @test r.status === :supported && y isa type_bound(r.value) && eltype(y) === element_type(r.value)
+        a isa SubArray && eltype(y) === Bool || @test type_bound(r.value) === typeof(y)
     end
 end
 

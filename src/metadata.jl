@@ -668,3 +668,51 @@ function _infer_call(::typeof(hcat), args::Vector{ValueInfo})
     _row(parts[1]) && all(v -> v.family === kind, parts) && return _supported(_row_result(kind, T, cols))
     _supported(_array_result(T, (rows, cols); container_type=AbstractMatrix{T}))
 end
+
+# ── scans ───────────────────────────────────────────────────────────────
+
+# cumsum/cumprod accumulate with Base.add_sum/mul_prod, which widen small
+# integers as sum does; Bool sums are Int but Bool products stay Bool.
+_prod_type(::Type{Bool}) = Bool
+_prod_type(T::Type) = _sum_type(T)
+_scan_type(::typeof(cumsum), T::Type) = _sum_type(T)
+_scan_type(::typeof(cumprod), T::Type) = _prod_type(T)
+
+# A scan's `dims` is one positive integer; a tuple is a TypeError in Base.
+function _known_dim(v::ValueInfo)
+    dims = _known_dims(v)
+    dims !== nothing && known_value(v).value isa Int ? only(dims) : nothing
+end
+
+# Base allocates a scan as similar(A, S): for a standard array an Array,
+# except that a Bool result over BitArray storage (or a view of it) is a
+# BitArray. An abstract bound cannot tell those apart.
+function _similar_container(a::ValueInfo, S::Type, N::Int)
+    S === Bool || return Array{S,N}
+    B = type_bound(a)
+    B <: Array ? Array{Bool,N} : B <: BitArray ? BitArray{N} : AbstractArray{Bool,N}
+end
+
+# A scan keeps its operand's axes along every `dims`, including one beyond the
+# rank (a copy). Only a vector may omit `dims`; Base requires it otherwise. A
+# row vector stays a row of the same kind, since LinearAlgebra re-wraps
+# similar(parent). Base iterates a scalar into a zero-dimensional Array.
+function _infer_call(f::Union{typeof(cumsum),typeof(cumprod)}, args::Vector{ValueInfo},
+                     kwargs::Vector{Pair{Symbol,ValueInfo}})
+    length(args) == 1 || return _unknown("only the single-argument cumsum/cumprod is covered")
+    a = args[1]
+    (_array(a) || _is_scalar(a)) && _machine(element_type(a)) ||
+        return _unknown("cumsum/cumprod require standard machine-real operands")
+    S = _scan_type(f, element_type(a))
+    if isempty(kwargs)
+        _is_scalar(a) && return _supported(ValueInfo(Array{S,0}, S, (), UnknownValue(), :unknown))
+        _vector(a) || return _unknown("cumsum/cumprod of a row vector or an array of rank ≥ 2 require dims")
+    else
+        _array(a) && length(kwargs) == 1 && first(kwargs[1]) === :dims ||
+            return _unknown("only the dims keyword on an array is covered")
+        _known_dim(last(kwargs[1])) === nothing &&
+            return _unknown("dims must be a known positive integer")
+    end
+    _row(a) && return _supported(_row_result(a.family, S, value_axes(a)[2]))
+    _supported(_array_result(S, value_axes(a); container_type=_similar_container(a, S, value_rank(a))))
+end
