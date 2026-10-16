@@ -12,7 +12,7 @@ output_signature(f, x, args...)   # -> (; size, eltype), no pilot run
 alloc_output(f, x, args...)       # -> similar(x, eltype, size)
 ```
 
-## Metadata queries (v0.1.3)
+## Metadata queries (v0.1.4)
 
 Every positional operand and keyword value uses a nonparametric `ValueInfo`.
 Dimensions, constants, and operand counts are ordinary data, not Julia type
@@ -66,7 +66,7 @@ not imply an exact `Vector{Any}` container.
 available yet, such as an unbound declaration's `levels(g)` or `axes(M, 2)`.
 The name is ordinary data. Equal names denote the same axis and length;
 different names may still have equal lengths. Rules carry names through
-broadcasts, products, reductions, indexing and concatenation:
+broadcasts, products, reductions, scans, indexing and concatenation:
 
 ```julia
 N, L = SymbolicAxis(:N), SymbolicAxis(:(levels(g)))
@@ -111,15 +111,19 @@ Rules cover Base machine integers (including `Bool`) and `Float16/32/64`:
   array `+`/`-` and array `/` scalar;
 - `sum`, `minimum`, `maximum`, and with the Statistics extension
   `mean`/`std`/`var`, fully or over known `dims`;
+- `cumsum`/`cumprod`, which keep their operand's axes: a vector with or
+  without `dims`, and any standard array or row vector over a known integer
+  `dims` (a row vector stays a row). Julia iterates a scalar operand into a
+  zero-dimensional `Array`, which is what they describe;
 - `vcat` of scalars/vectors and `hcat` of scalars, vectors and matrices.
 
-Arithmetic rules account for Boolean results, integer-power typing, `sum`
-widening and LinearAlgebra's product element type. Floating functions (and
-`mean`/`std`/`var`) return `Float64` for machine integers and `Bool` and keep
-`Float16/32/64`; `abs`, `minimum` and `maximum` keep the element type, and a
-`Bool` `minimum`/`maximum` over `dims` of a `BitArray` (or a view of one)
-stays a `BitArray`. `logaddexp` returns the floating type of its promoted
-operands. The closed primitive family
+Arithmetic rules account for Boolean results, integer-power typing,
+`sum`/`cumsum`/`cumprod` widening and LinearAlgebra's product element type.
+Floating functions (and `mean`/`std`/`var`) return `Float64` for machine
+integers and `Bool` and keep `Float16/32/64`; `abs`, `minimum` and `maximum`
+keep the element type, and a `Bool` `minimum`/`maximum` over `dims` of a
+`BitArray` (or a view of one) stays a `BitArray`. `logaddexp` returns the
+floating type of its promoted operands. The closed primitive family
 is the boundary where these Base rules apply; custom numerical types require
 their own justified rules, not guessed promotion. Where Julia's own result
 type depends on the Julia version or on runtime sizes, the fact stays unknown:
@@ -139,9 +143,10 @@ Custom helpers are never run, even inside broadcast; broadcast can retain axes
 while its element result remains unknown. No Julia compiler inference is used.
 
 Keywords have the same descriptor convention,
-`kwargs=Pair{Symbol,ValueInfo}[:dims => known_info(1)]`. The reductions above
-accept a known `dims`; other keywords, structured returns, arithmetic between
-dimension names (`n + p`), and general control flow return unknown.
+`kwargs=Pair{Symbol,ValueInfo}[:dims => known_info(1)]`. The reductions and
+scans above accept a known `dims`; other keywords, structured returns,
+arithmetic between dimension names (`n + p`), and general control flow return
+unknown.
 Rules assume the documented Base methods have not been redefined. Known mutable
 constants and boundary shapes must remain valid for the analysis using them.
 
@@ -220,10 +225,10 @@ signatures through a graph whose intermediate arrays do not exist yet.
 ReactiveKernels (RK) and ReactiveKernelsPPL (RKPPL) need a separate, uniform
 metadata query. The bounded foundation above is implemented in `v0.1.1`;
 `v0.1.2` adds symbolic axes and the matrix, product, concatenation and
-reduction rules RKPPL's declaration shape inference needs, and `v0.1.3` the
+reduction rules RKPPL's declaration shape inference needs, `v0.1.3` the
 remaining scalar functions and reductions of RKPPL's assignment functions
 (`log10`, `log1p`, `expm1`, `abs`, `tanh`, `logaddexp`, `logistic`, `var`,
-`minimum`, `maximum`). The following
+`minimum`, `maximum`), and `v0.1.4` `cumsum`/`cumprod`. The following
 remains the broader target and incremental migration scope; tuple components
 and arithmetic between dimension names are not implemented yet.
 
